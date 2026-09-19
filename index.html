@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="description" content="whatacolor — real-world eyedropper: point your camera and find out what color it is." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta name="application-name" content="whatacolor" />
+    <meta name="apple-mobile-web-app-title" content="whatacolor" />
+    <title>whatacolor</title>
+  </head>
+  <body>
+    <main id="app">
+      <video id="video" playsinline muted autoplay></video>
+      <!-- Тап по видео только закрывает карточку цвета; замер — кнопкой-затвором -->
+      <div id="tap-layer"></div>
+
+      <div id="reticle" aria-hidden="true"></div>
+
+      <div id="live" class="plate" aria-live="polite">
+        <span id="live-swatch" class="swatch"></span>
+        <span class="live-text">
+          <span id="live-name" data-i18n="aiming"></span>
+          <span id="live-hex">—</span>
+        </span>
+      </div>
+
+      <section id="bottom">
+        <div id="detail" class="plate" hidden>
+          <span id="detail-swatch" class="swatch big"></span>
+          <span class="detail-text">
+            <span id="detail-name"></span>
+            <span id="detail-meta"></span>
+          </span>
+        </div>
+
+        <div id="utility">
+          <button id="lang-btn" class="plate icon-btn small" type="button" data-i18n-aria="language">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/></svg>
+          </button>
+          <button id="donate-btn" class="plate icon-btn small" type="button" data-i18n-aria="donate">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7a4.3 4.3 0 0 1 7.5 2.8C19.5 15.4 12 20 12 20z"/></svg>
+          </button>
+          <span class="grow"></span>
+          <button id="palette-btn" class="pill accent" type="button" data-i18n="palette" hidden></button>
+        </div>
+
+        <div id="ribbon" role="list" data-i18n-aria="todayColors"></div>
+
+        <p id="hint" data-i18n="hint"></p>
+
+        <div id="shutter-row">
+          <button id="library-btn" class="plate thumb" type="button" data-i18n-aria="library">
+            <span id="library-thumb"></span>
+          </button>
+          <div class="shutter-wrap">
+            <button id="shutter" type="button" data-i18n-aria="capture"><span></span></button>
+            <button id="mode-btn" type="button" data-i18n-aria="calibrate"></button>
+          </div>
+          <button id="flip-btn" class="plate icon-btn" type="button" data-i18n-aria="switchCamera">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.8l1.4-2h4.6l1.4 2h1.8A2.5 2.5 0 0 1 20 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5z"/><path d="M8.6 12.6a3.5 3.5 0 0 1 6.1-2.3M15.4 13.4a3.5 3.5 0 0 1-6.1 2.3"/><path d="M14.9 8.4v2h-2M9.1 17.6v-2h2"/></svg>
+          </button>
+        </div>
+      </section>
+
+      <!-- Калибровка по белому листу -->
+      <div id="calib" class="overlay" hidden>
+        <p class="overlay-title" data-i18n="calibTitle"></p>
+        <div id="calib-frame"></div>
+        <div class="overlay-actions">
+          <button id="calib-reset" class="pill plate" type="button" data-i18n="reset" hidden></button>
+          <button id="calib-cancel" class="pill plate" type="button" data-i18n="cancel"></button>
+          <button id="calib-done" class="pill accent" type="button" data-i18n="done"></button>
+        </div>
+      </div>
+
+      <!-- Палитра дня -->
+      <div id="palette" class="overlay solid" hidden>
+        <img id="palette-img" data-i18n-alt="palette" />
+        <div class="overlay-actions">
+          <button id="palette-copy" class="pill plate" type="button" data-i18n="copyHexes"></button>
+          <button id="palette-download" class="pill plate" type="button" data-i18n="download"></button>
+        </div>
+        <div class="overlay-actions">
+          <button id="palette-close" class="pill plate" type="button" data-i18n="close"></button>
+          <button id="palette-share" class="pill accent" type="button" data-i18n="share"></button>
+        </div>
+      </div>
+
+      <!-- Нет камеры -->
+      <div id="error" class="overlay solid" hidden>
+        <div class="error-box">
+          <div class="error-icon" aria-hidden="true"></div>
+          <h1 id="error-title"></h1>
+          <p id="error-text"></p>
+        </div>
+        <div class="overlay-actions">
+          <button id="error-retry" class="pill accent wide" type="button" data-i18n="retry"></button>
+        </div>
+      </div>
+
+      <!-- Библиотека -->
+      <div id="library" class="overlay dim sheet-host" hidden>
+        <div class="sheet glass full" role="dialog" aria-modal="true" aria-labelledby="library-title">
+          <header class="lib-head">
+            <div>
+              <h2 id="library-title" data-i18n="library"></h2>
+              <small id="library-count"></small>
+            </div>
+            <button id="library-close" class="pill soft compact" type="button" data-i18n="close"></button>
+          </header>
+          <div class="lib-actions">
+            <button id="library-copy" class="pill soft compact" type="button" data-i18n="copyAll"></button>
+            <button id="library-clear" class="pill soft compact danger" type="button" data-i18n="clearLibrary"></button>
+          </div>
+          <div id="library-list"></div>
+          <p id="library-empty" data-i18n="libraryEmpty" hidden></p>
+        </div>
+        <div id="row-menu" class="glass" hidden>
+          <button id="row-delete" type="button" data-i18n="delete"></button>
+        </div>
+        <div id="confirm" class="dialog-host" hidden>
+          <div class="dialog glass">
+            <p data-i18n="clearConfirm"></p>
+            <div class="overlay-actions">
+              <button id="confirm-no" class="pill soft" type="button" data-i18n="cancel"></button>
+              <button id="confirm-yes" class="pill danger-fill" type="button" data-i18n="clearYes"></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Выбор языка -->
+      <div id="lang" class="overlay dim sheet-host" hidden>
+        <div class="sheet glass">
+          <p class="sheet-title" data-i18n="language"></p>
+          <div id="lang-list"></div>
+        </div>
+      </div>
+
+      <!-- Пожертвования -->
+      <div id="donate" class="overlay dim sheet-host" hidden>
+        <div class="sheet glass">
+          <svg class="donate-heart" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7a4.3 4.3 0 0 1 7.5 2.8C19.5 15.4 12 20 12 20z"/></svg>
+          <p class="sheet-title" data-i18n="donateTitle"></p>
+          <p class="sheet-text" data-i18n="donateText"></p>
+          <p id="donate-soon" class="sheet-text dim-text" data-i18n="donateSoon" hidden></p>
+          <div class="overlay-actions">
+            <button id="donate-close" class="pill soft" type="button" data-i18n="close"></button>
+            <a id="donate-go" class="pill accent" target="_blank" rel="noopener" data-i18n="donateGo" hidden></a>
+          </div>
+        </div>
+      </div>
+
+      <div id="toast" role="status" aria-live="polite"></div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
