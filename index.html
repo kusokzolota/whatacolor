@@ -8,6 +8,8 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="description" content="whatacolor — real-world eyedropper: point your camera and find out what color it is." />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="application-name" content="whatacolor" />
     <meta name="apple-mobile-web-app-title" content="whatacolor" />
     <title>whatacolor</title>
@@ -20,7 +22,7 @@
 
       <div id="reticle" aria-hidden="true"></div>
 
-      <div id="live" class="plate" aria-live="polite">
+      <div id="live" class="plate">
         <span id="live-swatch" class="swatch"></span>
         <span class="live-text">
           <span id="live-name" data-i18n="aiming"></span>
@@ -156,6 +158,7 @@
       </div>
 
       <div id="toast" role="status" aria-live="polite"></div>
+      <p id="announcer" class="sr-only" role="status" aria-live="polite"></p>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

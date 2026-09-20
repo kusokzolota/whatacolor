@@ -28,11 +28,16 @@ function safeGet(key: string): string | null {
   }
 }
 
+let storageBroken = false
+
+// В приватном режиме Safari запись падает. Приложение работает, но молчать об этом нельзя.
+export const storageFailed = () => storageBroken
+
 function safeSet(key: string, value: string) {
   try {
     localStorage.setItem(key, value)
   } catch {
-    /* приватный режим / переполнение — работаем без сохранения */
+    storageBroken = true
   }
 }
 

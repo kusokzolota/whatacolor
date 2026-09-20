@@ -51,6 +51,17 @@ button {
   display: none !important;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 #app {
   position: fixed;
   inset: 0;
@@ -808,6 +819,71 @@ a.pill {
   color: var(--fg-dim);
   margin: 0;
   white-space: pre-line;
+}
+
+/* ---------- Альбомная ориентация ----------
+   Телефон лёжа: высоты мало, поэтому управление уходит вправо колонкой,
+   а прицел смещается влево, чтобы кнопки на него не наезжали. */
+
+@media (orientation: landscape) and (max-height: 520px) {
+  #reticle {
+    left: 34%;
+  }
+  #live {
+    left: 34%;
+    top: calc(50% + 48px);
+    bottom: auto;
+  }
+  #bottom {
+    left: auto;
+    top: 0;
+    width: 132px;
+    padding: calc(8px + var(--safe-t)) calc(8px + env(safe-area-inset-right, 0px)) 8px 0;
+    justify-content: center;
+    gap: 8px;
+  }
+  #ribbon,
+  #hint,
+  #detail {
+    display: none;
+  }
+  #utility {
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 0;
+  }
+  #utility .grow {
+    display: none;
+  }
+  #palette-btn {
+    width: 100%;
+    min-height: 38px;
+    padding: 0 10px;
+    font-size: 13px;
+  }
+  #shutter-row {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 10px;
+    padding: 0;
+  }
+  #library-btn,
+  #flip-btn {
+    justify-self: center;
+  }
+  #shutter {
+    width: 64px;
+    height: 64px;
+  }
+  #shutter span {
+    width: 48px;
+    height: 48px;
+  }
+  .thumb,
+  .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
 }
 
 /* ---------- Меньше движения ---------- */

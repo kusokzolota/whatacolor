@@ -15,6 +15,7 @@ import {
   saveFacing,
   saveGains,
   saveLibrary,
+  storageFailed,
   type Facing,
   type Gains,
   type Sample,
@@ -40,6 +41,7 @@ const calibFrame = $('calib-frame')
 const errorOverlay = $('error')
 const bottom = $('bottom')
 const toast = $('toast')
+const announcer = $('announcer')
 
 const SAMPLE = 20 // сторона области замера в пикселях видео
 const INTERVAL = 100 // не чаще 10 замеров в секунду
@@ -115,6 +117,7 @@ function readMean(x = 0, y = 0, w = video.videoWidth, h = video.videoHeight): RG
   return meanRgb(frameCtx.getImageData(0, 0, frameCanvas.width, frameCanvas.height).data)
 }
 
+let storageWarned = false
 let lastSample = 0
 function loop(now: number) {
   requestAnimationFrame(loop)
@@ -207,8 +210,10 @@ function nextFrame(): Promise<void> {
 // Автокалибровка «серый мир»: 10 кадров, средние по каналам всего кадра,
 // gain = средняя яркость / среднее канала, осторожный диапазон 0.7–1.4.
 let autoRun = 0
-async function autoCalibrate() {
+let autoRetries = 0
+async function autoCalibrate(isRetry = false) {
   const run = ++autoRun
+  if (!isRetry) autoRetries = 0
   autoGains = null
   renderMode()
   // ждём первые кадры и даём камере устаканить экспозицию, потом фиксируем
@@ -230,11 +235,20 @@ async function autoCalibrate() {
     acc[2] += b
     frames++
   }
-  if (!frames || run !== autoRun) return
+  if (run !== autoRun) return
+  if (!frames) {
+    // кадры были чёрными (закрыт объектив, темнота) — попробуем ещё раз попозже
+    if (autoRetries < 5) {
+      autoRetries++
+      setTimeout(() => autoCalibrate(true), 2000)
+    }
+    return
+  }
   const [r, g, b] = acc.map((v) => v / frames)
   const target = (r + g + b) / 3
   const k = (m: number) => clamp(target / Math.max(m, 1), AUTO_MIN, AUTO_MAX)
   autoGains = { r: k(r), g: k(g), b: k(b) }
+  renderMode()
   current = null
 }
 
@@ -390,6 +404,11 @@ function capture() {
   persist()
   renderRibbon(true)
   navigator.vibrate?.(30)
+  announcer.textContent = tf('savedColor', { name: sampleName(library[library.length - 1]), hex: current.hex })
+  if (storageFailed() && !storageWarned) {
+    storageWarned = true
+    showToast(t('storageOff'))
+  }
   shutter.classList.remove('snap')
   void shutter.offsetWidth // перезапуск анимации при быстрых повторных нажатиях
   shutter.classList.add('snap')
@@ -480,12 +499,17 @@ function bindChip(el: HTMLElement, s: Sample) {
     if (moved < 10) showDetail(s, el)
   })
   el.addEventListener('pointercancel', reset)
+  // detail === 0 — клик с клавиатуры, мышиные и сенсорные обрабатываются выше
+  el.addEventListener('click', (e) => {
+    if (e.detail === 0) showDetail(s, el)
+  })
 }
 
 // ---------- Калибровка ----------
 
 function renderMode() {
-  modeBtn.textContent = t(manualGains ? 'modeSheet' : 'modeAuto')
+  // «авто» показываем только когда коэффициенты действительно посчитаны
+  modeBtn.textContent = t(manualGains ? 'modeSheet' : autoGains ? 'modeAuto' : 'modeNone')
   modeBtn.classList.toggle('sheet', !!manualGains)
   $('calib-reset').hidden = !manualGains
 }
@@ -690,7 +714,12 @@ libraryList.addEventListener('pointerdown', (e) => {
 libraryList.addEventListener('pointermove', (e) => {
   if (pressRow && Math.hypot(e.clientX - pressX, e.clientY - pressY) > 10) cancelPress()
 })
-for (const type of ['pointerup', 'pointercancel', 'scroll']) libraryList.addEventListener(type, cancelPress)
+for (const type of ['pointerup', 'pointercancel']) libraryList.addEventListener(type, cancelPress)
+// При прокрутке меню обязано исчезнуть: иначе оно останется висеть над другой строкой
+libraryList.addEventListener('scroll', () => {
+  cancelPress()
+  hideMenu()
+})
 
 libraryList.addEventListener('click', async (e) => {
   const row = (e.target as HTMLElement).closest<HTMLElement>('.lib-row')
@@ -704,6 +733,8 @@ libraryList.addEventListener('click', async (e) => {
   if (await copyText(s.hex)) {
     navigator.vibrate?.(15)
     showToast(tf('copied', { hex: s.hex }))
+  } else {
+    showToast(`${t('copyFailed')}: ${s.hex}`)
   }
 })
 
@@ -756,9 +787,12 @@ $('row-delete').addEventListener('click', () => {
 
 $('library-copy').addEventListener('click', async () => {
   const text = [...library].reverse().map((s) => s.hex).join('\n')
-  if (text && (await copyText(text))) {
+  if (!text) return
+  if (await copyText(text)) {
     navigator.vibrate?.(15)
     showToast(t('copiedAll'))
+  } else {
+    showToast(t('copyFailed'))
   }
 })
 
@@ -822,9 +856,12 @@ $('palette-copy').addEventListener('click', async () => {
   const text = pickSamples(todaySamples())
     .map((s) => s.hex)
     .join('\n')
-  if (text && (await copyText(text))) {
+  if (!text) return
+  if (await copyText(text)) {
     navigator.vibrate?.(15)
     showToast(t('copiedAll'))
+  } else {
+    showToast(t('copyFailed'))
   }
 })
 
@@ -904,9 +941,46 @@ $('donate-btn').addEventListener('click', () => {
 })
 $('donate-close').addEventListener('click', () => closeSheet(donateHost))
 
+// ---------- Смена суток ----------
+
+// Лента и «Палитра дня» показывают сегодняшний день. Если приложение оставили открытым,
+// в полночь их нужно перерисовать, иначе вчерашние цвета висят до следующего замера.
+function scheduleMidnight() {
+  const now = new Date()
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 2).getTime()
+  setTimeout(() => {
+    renderRibbon()
+    refreshCameraUi()
+    if (!libraryHost.hidden) renderLibrary()
+    scheduleMidnight()
+  }, Math.max(1000, next - Date.now()))
+}
+
+// ---------- Клавиатура ----------
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return
+  if (!confirmHost.hidden) confirmHost.hidden = true
+  else if (!rowMenu.hidden) hideMenu()
+  else if (!libraryHost.hidden) closeSheet(libraryHost)
+  else if (!langHost.hidden) closeSheet(langHost)
+  else if (!donateHost.hidden) closeSheet(donateHost)
+  else if (!paletteOverlay.hidden) {
+    paletteOverlay.hidden = true
+    resumeFor('palette')
+  } else if (!calibOverlay.hidden) closeCalib()
+  else if (!detail.hidden) hideDetail()
+})
+
 // ---------- Старт ----------
 
 applyI18n()
 refreshCameraUi()
+scheduleMidnight()
 startCamera()
 requestAnimationFrame(loop)
+
+// Офлайн: приложению не нужен интернет, кроме загрузки самих файлов
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}))
+}
