@@ -46,16 +46,21 @@ const announcer = $('announcer')
 const SAMPLE = 20 // сторона области замера в пикселях видео
 const INTERVAL = 100 // не чаще 10 замеров в секунду
 const PALETTE_MIN = 4
-const AUTO_FRAMES = 10
-const AUTO_MIN = 0.7
-const AUTO_MAX = 1.4
+const AUTO_PERIOD = 2000 // как часто пересчитывать поправку
+const AUTO_NEAR_MAX = 0.9 // берём пиксели не темнее 90% от самого светлого в кадре
+const AUTO_MIN_PATCH = 0.002 // и только если таких набралось хотя бы столько от кадра
+const AUTO_MIN_LUMA = 80 // темнее — судить не по чему
+const AUTO_MAX_SPREAD = 110 // перекос сильнее — это уже не оттенок света
+const AUTO_SMOOTH = 0.6 // сглаживание между пересчётами
+const AUTO_MIN = 0.82
+const AUTO_MAX = 1.22
 const MANUAL_MIN = 0.5
 const MANUAL_MAX = 2.0
 
 let stream: MediaStream | null = null
 let facing: Facing = loadFacing()
 let manualGains: Gains | null = loadGains(facing) // по белому листу, сохраняется
-let autoGains: Gains | null = null // серый мир, считается заново при каждом старте камеры
+let autoGains: Gains | null = null // по светлому пятну кадра, не сохраняется между запусками
 let library: Sample[] = loadLibrary()
 let current: { rgb: RGB; hex: string } | null = null
 let errorKeys: [Key, Key] | null = null
@@ -200,56 +205,97 @@ async function lockCamera() {
   }
 }
 
-function nextFrame(): Promise<void> {
-  return new Promise((res) => {
-    if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(() => res())
-    else setTimeout(res, 50)
-  })
+// Автокалибровка по светлому пятну кадра.
+// Серый мир (среднее по всему кадру) врёт в одноцветной обстановке: в зелёной операционной
+// он считает зелень перекосом камеры, душит зелёный канал — и всё белое уходит в розовый.
+// Опираемся вместо этого на самые светлые пиксели: в реальной сцене это почти всегда
+// что-то белое или серое — потолок, бумага, плитка, халат.
+let autoRun = 0
+let autoTimer = 0
+
+function brightPatch(): RGB | null {
+  if (!videoReady()) return null
+  const w = frameCanvas.width
+  const h = frameCanvas.height
+  frameCtx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, w, h)
+  const d = frameCtx.getImageData(0, 0, w, h).data
+  const n = w * h
+  const luma = new Float32Array(n)
+  for (let i = 0; i < n; i++) {
+    luma[i] = 0.2126 * d[i * 4] + 0.7152 * d[i * 4 + 1] + 0.0722 * d[i * 4 + 2]
+  }
+  // Доля от кадра тут не годится: если белого пятна мало, в выборку попадёт фон.
+  // Поэтому отсчитываем от самого светлого пикселя.
+  let maxLuma = 0
+  for (let i = 0; i < n; i++) if (luma[i] > maxLuma) maxLuma = luma[i]
+  if (maxLuma < AUTO_MIN_LUMA) return null
+  const cut = maxLuma * AUTO_NEAR_MAX
+  let r = 0
+  let g = 0
+  let b = 0
+  let count = 0
+  for (let i = 0; i < n; i++) {
+    if (luma[i] < cut) continue
+    r += d[i * 4]
+    g += d[i * 4 + 1]
+    b += d[i * 4 + 2]
+    count++
+  }
+  return count >= n * AUTO_MIN_PATCH ? [r / count, g / count, b / count] : null
 }
 
-// Автокалибровка «серый мир»: 10 кадров, средние по каналам всего кадра,
-// gain = средняя яркость / среднее канала, осторожный диапазон 0.7–1.4.
-let autoRun = 0
-let autoRetries = 0
-async function autoCalibrate(isRetry = false) {
-  const run = ++autoRun
-  if (!isRetry) autoRetries = 0
-  autoGains = null
-  renderMode()
-  // ждём первые кадры и даём камере устаканить экспозицию, потом фиксируем
-  for (let i = 0; i < 50 && !videoReady(); i++) await sleep(100)
-  await sleep(600)
-  if (run !== autoRun) return
-  await lockCamera()
-
-  const acc = [0, 0, 0]
-  let frames = 0
-  for (let tries = 0; frames < AUTO_FRAMES && tries < AUTO_FRAMES * 4; tries++) {
-    await Promise.race([nextFrame(), sleep(120)])
-    if (run !== autoRun) return
-    if (!videoReady()) continue
-    const [r, g, b] = readMean()
-    if (r + g + b < 15) continue // чёрные кадры прогрева камеры не считаем
-    acc[0] += r
-    acc[1] += g
-    acc[2] += b
-    frames++
-  }
-  if (run !== autoRun) return
-  if (!frames) {
-    // кадры были чёрными (закрыт объектив, темнота) — попробуем ещё раз попозже
-    if (autoRetries < 5) {
-      autoRetries++
-      setTimeout(() => autoCalibrate(true), 2000)
-    }
-    return
-  }
-  const [r, g, b] = acc.map((v) => v / frames)
-  const target = (r + g + b) / 3
-  const k = (m: number) => clamp(target / Math.max(m, 1), AUTO_MIN, AUTO_MAX)
-  autoGains = { r: k(r), g: k(g), b: k(b) }
+// Ориентира в кадре нет — плавно возвращаемся к нулевой поправке, чтобы прошлая
+// (например, снятая под тёплой лампой) не красила следующую сцену.
+function relaxAutoGains() {
+  if (!autoGains) return
+  const back = (a: number) => a + (1 - a) * AUTO_SMOOTH
+  const next: Gains = { r: back(autoGains.r), g: back(autoGains.g), b: back(autoGains.b) }
+  const done = [next.r, next.g, next.b].every((v) => Math.abs(v - 1) < 0.01)
+  autoGains = done ? null : next
   renderMode()
   current = null
+}
+
+function updateAutoGains() {
+  if (manualGains || openModals.size) return
+  const patch = brightPatch()
+  if (!patch) return relaxAutoGains()
+  const [pr, pg, pb] = patch
+  // Слишком темно, чтобы судить о белом
+  if (0.2126 * pr + 0.7152 * pg + 0.0722 * pb < AUTO_MIN_LUMA) return relaxAutoGains()
+  // Оттенок освещения всегда лежит на оси «тёплый — холодный»: либо R ≥ G ≥ B (лампа накаливания),
+  // либо B ≥ G ≥ R (тень, облака). Цветной предмет перекашивает каналы иначе — например,
+  // у зелёного халата максимум в середине. Такое пятно за белый ориентир не принимаем.
+  const warmToCool = (pr >= pg && pg >= pb) || (pb >= pg && pg >= pr)
+  if (!warmToCool) return relaxAutoGains()
+  if (Math.max(pr, pg, pb) - Math.min(pr, pg, pb) > AUTO_MAX_SPREAD) return relaxAutoGains()
+
+  const target = (pr + pg + pb) / 3
+  const k = (m: number) => clamp(target / Math.max(m, 1), AUTO_MIN, AUTO_MAX)
+  const next: Gains = { r: k(pr), g: k(pg), b: k(pb) }
+  const mix = (a: number, b2: number) => a + (b2 - a) * AUTO_SMOOTH
+  autoGains = autoGains
+    ? { r: mix(autoGains.r, next.r), g: mix(autoGains.g, next.g), b: mix(autoGains.b, next.b) }
+    : next
+  renderMode()
+  current = null
+}
+
+async function autoCalibrate() {
+  const run = ++autoRun
+  clearInterval(autoTimer)
+  autoGains = null
+  renderMode()
+  for (let i = 0; i < 50 && !videoReady(); i++) await sleep(100)
+  await sleep(600) // даём камере устаканить экспозицию, потом фиксируем
+  if (run !== autoRun) return
+  await lockCamera()
+  if (run !== autoRun) return
+  updateAutoGains()
+  // Сцена меняется, пока ходишь с телефоном, поэтому поправку пересчитываем регулярно
+  autoTimer = window.setInterval(() => {
+    if (run === autoRun) updateAutoGains()
+  }, AUTO_PERIOD)
 }
 
 let wakeLock: WakeLockSentinel | null = null
