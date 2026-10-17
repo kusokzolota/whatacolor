@@ -1,12 +1,17 @@
+import { encode } from 'uqr'
 import { hexToRgb, nearestColor, textColorFor } from './color'
-import { APP_NAME } from './config'
-import { colorName, getLang, isRtl } from './i18n'
+import { APP_NAME, SITE_URL } from './config'
+import { colorName, getLang, isRtl, t } from './i18n'
 import type { Sample } from './storage'
 
 const W = 1080
 const H = 1920
-const HEADER = 240
-const FOOTER = 110
+const HEADER = 220
+const FOOTER = 340 // рекламный блок: QR-код, название и адрес сервиса
+// Поля под интерфейс сторис: сверху имя профиля, снизу строка ответа.
+// Всё важное держим между ними, иначе реклама сервиса окажется под кнопками.
+const SAFE_TOP = 170
+const SAFE_BOTTOM = 230
 const MAX = 8
 const FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif'
 
@@ -50,10 +55,116 @@ function fitText(ctx: CanvasRenderingContext2D, text: string, weight: number, si
   return s
 }
 
-function signature() {
-  const host = location.hostname
-  const local = !host.includes('.') || /^[\d.]+$/.test(host) || host.endsWith('.local')
-  return local ? APP_NAME : host
+const ACCENT = '#E8752A' // оранжевая точка прицела, как на иконке
+const SITE_HOST = SITE_URL.replace(/^https?:\/\//, '')
+
+// Перенос строки по ширине. В японском, китайском и тайском пробелов между словами нет — режем по символам.
+function wrap(ctx: CanvasRenderingContext2D, text: string, maxW: number, maxLines: number): string[] {
+  const spaced = text.includes(' ')
+  const tokens = spaced ? text.split(' ') : [...text]
+  const lines: string[] = []
+  let line = ''
+  for (const tok of tokens) {
+    const next = line ? line + (spaced ? ' ' : '') + tok : tok
+    if (ctx.measureText(next).width <= maxW || !line) line = next
+    else {
+      lines.push(line)
+      line = tok
+    }
+  }
+  if (line) lines.push(line)
+  if (lines.length > maxLines) {
+    lines.length = maxLines
+    lines[maxLines - 1] = lines[maxLines - 1].replace(/\s*\S?$/, '…')
+  }
+  return lines
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.arcTo(x + w, y, x + w, y + h, r)
+  ctx.arcTo(x + w, y + h, x, y + h, r)
+  ctx.arcTo(x, y + h, x, y, r)
+  ctx.arcTo(x, y, x + w, y, r)
+  ctx.closePath()
+}
+
+// QR-код на белой подложке: тёмные модули на светлом читаются любой камерой
+function drawQr(ctx: CanvasRenderingContext2D, url: string, x: number, y: number, maxSize: number): number {
+  const { data, size } = encode(url, { ecc: 'M', border: 0 })
+  const quiet = 2 // поле вокруг кода в модулях
+  const cell = Math.floor(maxSize / (size + quiet * 2))
+  const box = cell * (size + quiet * 2)
+  ctx.fillStyle = '#ffffff'
+  roundRect(ctx, x, y, box, box, 18)
+  ctx.fill()
+  ctx.fillStyle = '#0d0d0d'
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if (data[r][c]) ctx.fillRect(x + (quiet + c) * cell, y + (quiet + r) * cell, cell, cell)
+    }
+  }
+  return box
+}
+
+// Знак whatacolor — прицел с оранжевой точкой
+function drawMark(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number) {
+  ctx.strokeStyle = '#ffffff'
+  ctx.lineWidth = r * 0.26
+  ctx.beginPath()
+  ctx.arc(cx, cy, r, 0, Math.PI * 2)
+  ctx.stroke()
+  ctx.fillStyle = ACCENT
+  ctx.beginPath()
+  ctx.arc(cx, cy, r * 0.36, 0, Math.PI * 2)
+  ctx.fill()
+}
+
+// Нижний блок карточки — явная реклама сервиса: откуда цвета и где попробовать самому
+function drawFooter(ctx: CanvasRenderingContext2D, rtl: boolean) {
+  const y0 = H - SAFE_BOTTOM - FOOTER
+  const pad = 72
+  ctx.fillStyle = '#151517'
+  ctx.fillRect(0, y0, W, FOOTER)
+
+  const qrMax = 236
+  const qrX = rtl ? W - pad - qrMax : pad
+  const box = drawQr(ctx, `${SITE_URL}/?ref=card`, qrX, y0 + (FOOTER - qrMax) / 2, qrMax)
+
+  const gap = 44
+  const textW = W - pad * 2 - box - gap
+  const textStart = rtl ? W - pad - box - gap : pad + box + gap
+  ctx.textAlign = rtl ? 'right' : 'left'
+  ctx.textBaseline = 'middle'
+
+  // знак и название
+  const markR = 24
+  const markX = rtl ? textStart - markR : textStart + markR
+  drawMark(ctx, markX, y0 + 82, markR)
+  ctx.fillStyle = '#ffffff'
+  ctx.font = `800 60px ${FONT}`
+  ctx.direction = 'ltr'
+  ctx.textAlign = rtl ? 'right' : 'left'
+  ctx.fillText(APP_NAME, rtl ? textStart - markR * 2 - 18 : textStart + markR * 2 + 18, y0 + 84)
+  ctx.direction = rtl ? 'rtl' : 'ltr'
+
+  // откуда эти цвета
+  ctx.fillStyle = 'rgba(255,255,255,0.6)'
+  ctx.font = `500 30px ${FONT}`
+  ctx.fillText(wrap(ctx, t('cardFound'), textW, 1)[0], textStart, y0 + 146)
+
+  // призыв
+  ctx.fillStyle = '#ffffff'
+  ctx.font = `600 34px ${FONT}`
+  wrap(ctx, t('cardCta'), textW, 2).forEach((line, i) => ctx.fillText(line, textStart, y0 + 198 + i * 44))
+
+  // адрес
+  ctx.fillStyle = ACCENT
+  ctx.font = `700 34px ${FONT}`
+  ctx.direction = 'ltr'
+  ctx.fillText(SITE_HOST, textStart, y0 + FOOTER - 46)
+  ctx.direction = rtl ? 'rtl' : 'ltr'
 }
 
 export interface CardOptions {
@@ -85,12 +196,13 @@ export async function renderPalette(samples: Sample[], opts: CardOptions = {}): 
   ctx.textBaseline = 'middle'
   ctx.textAlign = alignStart
   fitText(ctx, heading, 700, 96, W - 144)
-  ctx.fillText(heading, start, HEADER / 2 + 8)
+  ctx.fillText(heading, start, SAFE_TOP + HEADER / 2 + 8)
 
-  const stripeH = (H - HEADER - FOOTER) / list.length
+  const stripesTop = SAFE_TOP + HEADER
+  const stripeH = (H - stripesTop - FOOTER - SAFE_BOTTOM) / list.length
   const pad = 72
   list.forEach((s, i) => {
-    const y = HEADER + i * stripeH
+    const y = stripesTop + i * stripeH
     ctx.fillStyle = s.hex
     // +1 убирает субпиксельные щели между полосами
     ctx.fillRect(0, Math.floor(y), W, Math.ceil(stripeH) + 1)
@@ -119,11 +231,7 @@ export async function renderPalette(samples: Sample[], opts: CardOptions = {}): 
     ctx.direction = rtl ? 'rtl' : 'ltr'
   })
 
-  // Подпись-домен; на localhost и по IP (локальная разработка) — название приложения
-  ctx.fillStyle = 'rgba(255,255,255,0.5)'
-  ctx.textAlign = 'center'
-  ctx.font = `500 32px ${FONT}`
-  ctx.fillText(signature(), W / 2, H - FOOTER / 2)
+  drawFooter(ctx, rtl)
 
   if (canvas instanceof HTMLCanvasElement) {
     return new Promise((res, rej) => canvas.toBlob((b) => (b ? res(b) : rej(new Error('toBlob'))), 'image/png'))

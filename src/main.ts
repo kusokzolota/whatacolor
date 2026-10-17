@@ -1,6 +1,6 @@
 import './style.css'
 import { fromLinear, hexToRgb, medianRgb, nearestColor, nearestPaints, rgbToHex, toLinear, type RGB } from './color'
-import { APP_NAME, DONATE_URL } from './config'
+import { APP_NAME, DONATE_URL, SITE_URL } from './config'
 import { colorName, getLang, LANGS, isRtl, setLang, t, tf, type Key } from './i18n'
 import { formatTime, renderPalette } from './palette'
 import {
@@ -994,7 +994,12 @@ $('palette-share').addEventListener('click', async () => {
   const file = new File([paletteBlob], paletteFileName(), { type: 'image/png' })
   if (navigator.canShare?.({ files: [file] })) {
     try {
-      await navigator.share({ files: [file], title: `${APP_NAME} — ${cardTitle}` })
+      // Адрес кладём прямо в текст: при отправке файла часть приложений поле url отбрасывает
+      await navigator.share({
+        files: [file],
+        title: `${APP_NAME} — ${cardTitle}`,
+        text: `${tf('shareText', { name: cardTitle })} ${SITE_URL}/?ref=share`,
+      })
     } catch (e) {
       if ((e as DOMException).name !== 'AbortError') download()
     }
