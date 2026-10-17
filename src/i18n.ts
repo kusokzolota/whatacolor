@@ -414,7 +414,7 @@ const fr: Dict = {
   back: 'Retour',
   copyHex: 'Copier le HEX',
   similarPaints: 'Peintures proches',
-  cardFound: 'Couleurs trouvées avec l’appareil photo du téléphone',
+  cardFound: 'Couleurs trouvées avec un smartphone',
   cardCta: 'Visez n’importe quoi et découvrez de quelle couleur il s’agit',
   shareText: 'Palette « {name} » — couleurs trouvées avec whatacolor. Trouvez les vôtres :',
   paintsNote: 'Approximatif, d’après l’écran. Vérifiez avec un nuancier RAL avant d’acheter.',
