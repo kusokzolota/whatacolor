@@ -377,8 +377,30 @@ button {
   background: #fff;
   transition: transform var(--dur) var(--ease);
 }
+#shutter span {
+  position: relative;
+}
+/* плюс на затворе: нажатие добавляет цвет в палитру */
+#shutter span::before,
+#shutter span::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 22px;
+  height: 3px;
+  margin: -1.5px 0 0 -11px;
+  border-radius: 2px;
+  background: #111;
+}
+#shutter span::after {
+  transform: rotate(90deg);
+}
 #shutter:active span {
   transform: scale(0.86);
+}
+#shutter.full {
+  opacity: 0.45;
 }
 #shutter.snap span {
   animation: snap var(--dur) var(--ease);
@@ -390,15 +412,35 @@ button {
   }
 }
 #mode-btn {
-  min-height: 24px;
-  padding: 2px 10px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--fg-dim);
-  letter-spacing: 0.02em;
-}
-#mode-btn.sheet {
+  min-height: 28px;
+  margin-top: 4px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
   color: #fff;
+  background: var(--plate);
+  border: 1px solid var(--hairline);
+  transition: transform var(--dur) var(--ease);
+}
+#mode-btn:active {
+  transform: scale(0.95);
+}
+/* уже откалибровано по листу — тише, но с отметкой */
+#mode-btn.sheet {
+  color: var(--fg-dim);
+  background: transparent;
+  border-color: transparent;
+}
+#mode-btn.sheet::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-inline-end: 6px;
+  border-radius: 50%;
+  background: #4cd964;
+  vertical-align: 1px;
 }
 
 .thumb {
@@ -603,7 +645,35 @@ a.pill {
 .lib-actions .pill {
   padding: 0 12px;
 }
-#library-list {
+/* вкладки «Палитры / История» */
+.tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 14px;
+  background: var(--soft);
+}
+.tab {
+  min-height: 36px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.tab[aria-selected='true'] {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+.pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -611,7 +681,8 @@ a.pill {
   padding: 0 8px calc(16px + var(--safe-b));
   -webkit-overflow-scrolling: touch;
 }
-#library-empty {
+#library-empty,
+.lib-empty {
   flex: 1;
   margin: 0;
   display: grid;
@@ -773,6 +844,10 @@ a.pill {
 
 /* ---------- Палитра ---------- */
 
+/* карточку открывают и из библиотеки — она должна лечь поверх */
+#palette {
+  z-index: 10;
+}
 #palette-img {
   flex: 1;
   min-height: 0;
@@ -855,7 +930,7 @@ a.pill {
   #utility .grow {
     display: none;
   }
-  #palette-btn {
+  #save-btn {
     width: 100%;
     min-height: 38px;
     padding: 0 10px;
@@ -899,4 +974,152 @@ a.pill {
   #live.pulse {
     transform: translateX(-50%);
   }
+}
+
+/* ---------- Текущая палитра: пустые места ---------- */
+
+.chip.slot {
+  background: transparent;
+  border: 1.5px dashed rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+}
+
+/* ---------- Полоски цветов (превью палитры) ---------- */
+
+.stripes {
+  display: flex;
+  height: 40px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+}
+.stripes span {
+  flex: 1;
+}
+
+/* ---------- Сохранение палитры ---------- */
+
+.field {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 16px;
+  border-radius: 14px;
+  border: 1px solid var(--hairline);
+  background: var(--soft);
+  color: var(--fg);
+  font: inherit;
+  font-size: 17px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.field::placeholder {
+  color: var(--fg-faint);
+}
+.field:focus {
+  outline: 2px solid rgba(255, 255, 255, 0.5);
+  outline-offset: 1px;
+}
+
+/* ---------- Список палитр ---------- */
+
+.pal-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 8px 12px;
+  border-radius: 16px;
+  text-align: start;
+  transition: background-color var(--dur) var(--ease);
+}
+.pal-card:active {
+  background: var(--soft);
+}
+.pal-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pal-card-name {
+  font-size: 17px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pal-card-date {
+  flex: none;
+  font-size: 13px;
+  color: var(--fg-faint);
+}
+
+/* ---------- Экран палитры ---------- */
+
+.pv-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pv-head h3 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pv-actions {
+  padding-bottom: calc(12px + var(--safe-b));
+}
+.pv-item {
+  border-radius: 16px;
+  transition: background-color var(--dur) var(--ease);
+}
+.pv-item.open {
+  background: var(--soft);
+}
+.pv-more {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 8px 12px;
+}
+.pv-more-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.paint {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+.paint-swatch {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--hairline);
+}
+.paint-code {
+  font-size: 15px;
+  font-weight: 700;
+}
+.paint-name {
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+.paint-match {
+  font-size: 13px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+.paints-note {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-faint);
 }

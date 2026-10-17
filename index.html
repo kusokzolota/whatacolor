@@ -47,10 +47,10 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7a4.3 4.3 0 0 1 7.5 2.8C19.5 15.4 12 20 12 20z"/></svg>
           </button>
           <span class="grow"></span>
-          <button id="palette-btn" class="pill accent" type="button" data-i18n="palette" hidden></button>
+          <button id="save-btn" class="pill accent" type="button" data-i18n="savePalette" hidden></button>
         </div>
 
-        <div id="ribbon" role="list" data-i18n-aria="todayColors"></div>
+        <div id="ribbon" role="list" data-i18n-aria="draft"></div>
 
         <p id="hint" data-i18n="hint"></p>
 
@@ -75,11 +75,11 @@
         <div class="overlay-actions">
           <button id="calib-reset" class="pill plate" type="button" data-i18n="reset" hidden></button>
           <button id="calib-cancel" class="pill plate" type="button" data-i18n="cancel"></button>
-          <button id="calib-done" class="pill accent" type="button" data-i18n="done"></button>
+          <button id="calib-done" class="pill accent" type="button" data-i18n="calibrateBtn"></button>
         </div>
       </div>
 
-      <!-- Палитра дня -->
+      <!-- Карточка палитры для шеринга -->
       <div id="palette" class="overlay solid" hidden>
         <img id="palette-img" data-i18n-alt="palette" />
         <div class="overlay-actions">
@@ -114,25 +114,62 @@
             </div>
             <button id="library-close" class="pill soft compact" type="button" data-i18n="close"></button>
           </header>
-          <div class="lib-actions">
-            <button id="library-copy" class="pill soft compact" type="button" data-i18n="copyAll"></button>
-            <button id="library-clear" class="pill soft compact danger" type="button" data-i18n="clearLibrary"></button>
+          <div class="tabs" role="tablist">
+            <button id="tab-palettes" class="tab" type="button" role="tab" data-i18n="tabPalettes"></button>
+            <button id="tab-history" class="tab" type="button" role="tab" data-i18n="tabHistory"></button>
           </div>
-          <div id="library-list"></div>
-          <p id="library-empty" data-i18n="libraryEmpty" hidden></p>
+
+          <section id="pane-palettes" class="pane" role="tabpanel">
+            <div id="palette-list" class="scroll"></div>
+            <p id="palettes-empty" class="lib-empty" data-i18n="noPalettes" hidden></p>
+            <div id="palette-view" class="pane" hidden>
+              <div class="pv-head">
+                <button id="pv-back" class="pill soft compact" type="button" data-i18n="back"></button>
+                <h3 id="pv-name"></h3>
+              </div>
+              <div id="pv-colors" class="scroll"></div>
+              <div class="lib-actions pv-actions">
+                <button id="pv-delete" class="pill soft compact danger" type="button" data-i18n="deletePalette"></button>
+                <span class="grow"></span>
+                <button id="pv-share" class="pill accent compact" type="button" data-i18n="share"></button>
+              </div>
+            </div>
+          </section>
+
+          <section id="pane-history" class="pane" role="tabpanel" hidden>
+            <div class="lib-actions">
+              <button id="library-copy" class="pill soft compact" type="button" data-i18n="copyAll"></button>
+              <button id="library-clear" class="pill soft compact danger" type="button" data-i18n="clearLibrary"></button>
+            </div>
+            <div id="library-list" class="scroll"></div>
+            <p id="library-empty" class="lib-empty" data-i18n="libraryEmpty" hidden></p>
+          </section>
         </div>
         <div id="row-menu" class="glass" hidden>
           <button id="row-delete" type="button" data-i18n="delete"></button>
         </div>
         <div id="confirm" class="dialog-host" hidden>
           <div class="dialog glass">
-            <p data-i18n="clearConfirm"></p>
+            <p id="confirm-text"></p>
             <div class="overlay-actions">
               <button id="confirm-no" class="pill soft" type="button" data-i18n="cancel"></button>
-              <button id="confirm-yes" class="pill danger-fill" type="button" data-i18n="clearYes"></button>
+              <button id="confirm-yes" class="pill danger-fill" type="button"></button>
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- Сохранение палитры -->
+      <div id="save" class="overlay dim sheet-host" hidden>
+        <form id="save-form" class="sheet glass" autocomplete="off">
+          <p class="sheet-title" data-i18n="savePalette"></p>
+          <div id="save-preview" class="stripes" aria-hidden="true"></div>
+          <input id="palette-name" class="field" type="text" maxlength="40" enterkeyhint="done" data-i18n-ph="paletteNamePh" />
+          <div class="overlay-actions">
+            <button id="save-cancel" class="pill soft" type="button" data-i18n="cancel"></button>
+            <button id="save-confirm" class="pill accent" type="submit" data-i18n="save"></button>
+          </div>
+        </form>
       </div>
 
       <!-- Выбор языка -->

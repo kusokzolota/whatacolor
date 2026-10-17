@@ -56,8 +56,14 @@ function signature() {
   return local ? APP_NAME : host
 }
 
-export async function renderPalette(samples: Sample[]): Promise<Blob> {
+export interface CardOptions {
+  title?: string // название палитры вместо даты в шапке
+  showTime?: boolean // время замера на полосах — только для палитры дня
+}
+
+export async function renderPalette(samples: Sample[], opts: CardOptions = {}): Promise<Blob> {
   const list = pickSamples(samples)
+  const showTime = opts.showTime ?? !opts.title
   const canvas: HTMLCanvasElement | OffscreenCanvas =
     typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(W, H) : Object.assign(document.createElement('canvas'), { width: W, height: H })
   const ctx = canvas.getContext('2d') as CanvasRenderingContext2D
@@ -72,13 +78,14 @@ export async function renderPalette(samples: Sample[]): Promise<Blob> {
   ctx.fillStyle = '#0d0d0d'
   ctx.fillRect(0, 0, W, H)
 
-  // Дата словами
-  const date = new Date(list[0]?.timestamp ?? Date.now()).toLocaleDateString(getLang(), { day: 'numeric', month: 'long' })
+  // Шапка: название палитры, а без него — дата словами
+  const heading =
+    opts.title || new Date(list[0]?.timestamp ?? Date.now()).toLocaleDateString(getLang(), { day: 'numeric', month: 'long' })
   ctx.fillStyle = '#ffffff'
   ctx.textBaseline = 'middle'
   ctx.textAlign = alignStart
-  fitText(ctx, date, 700, 96, W - 144)
-  ctx.fillText(date, start, HEADER / 2 + 8)
+  fitText(ctx, heading, 700, 96, W - 144)
+  ctx.fillText(heading, start, HEADER / 2 + 8)
 
   const stripeH = (H - HEADER - FOOTER) / list.length
   const pad = 72
@@ -93,9 +100,9 @@ export async function renderPalette(samples: Sample[]): Promise<Blob> {
     ctx.fillStyle = fg
     ctx.textAlign = alignStart
     const name = colorName(nearestColor(rgb))
-    const time = formatTime(s.timestamp)
+    const time = showTime ? formatTime(s.timestamp) : ''
     ctx.font = `500 40px ${FONT}`
-    const timeW = ctx.measureText(time).width
+    const timeW = time ? ctx.measureText(time).width : 0
     const nameSize = fitText(ctx, name, 700, Math.min(64, stripeH * 0.34), W - pad * 2 - timeW - 40)
     ctx.font = `700 ${nameSize}px ${FONT}`
     ctx.fillText(name, start, y + stripeH / 2 - 14)
@@ -104,9 +111,11 @@ export async function renderPalette(samples: Sample[]): Promise<Blob> {
     ctx.direction = 'ltr' // HEX и время всегда слева направо, даже в арабском
     ctx.font = `400 34px ${FONT}`
     ctx.fillText(s.hex, start, y + stripeH / 2 + nameSize * 0.55 + 4)
-    ctx.textAlign = alignEnd
-    ctx.font = `400 40px ${FONT}`
-    ctx.fillText(time, end, y + stripeH / 2)
+    if (time) {
+      ctx.textAlign = alignEnd
+      ctx.font = `400 40px ${FONT}`
+      ctx.fillText(time, end, y + stripeH / 2)
+    }
     ctx.direction = rtl ? 'rtl' : 'ltr'
   })
 

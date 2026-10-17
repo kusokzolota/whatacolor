@@ -1,12 +1,19 @@
 import { COLORS, type NamedColor } from './colors'
+import { RAL, type Paint } from './ral'
 
 export type RGB = [number, number, number]
 type Lab = [number, number, number]
 
 // sRGB (0–255) → линейный канал (0–1)
-function toLinear(c: number): number {
+export function toLinear(c: number): number {
   const v = c / 255
   return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+}
+
+// Линейный канал (0–1) → sRGB (0–255), с обрезкой
+export function fromLinear(v: number): number {
+  const x = Math.min(1, Math.max(0, v))
+  return Math.round(255 * (x <= 0.0031308 ? x * 12.92 : 1.055 * Math.pow(x, 1 / 2.4) - 0.055))
 }
 
 // Белая точка D65
@@ -60,6 +67,18 @@ export function nearestColor(rgb: RGB): NamedColor {
     }
   }
   return COLORS[best]
+}
+
+// Ближайшие краски RAL по ΔE (CIE76). Сравниваем с настоящим Lab краски, а не с экранным HEX:
+// у насыщенных красок HEX обрезан до охвата sRGB и врал бы.
+export function nearestPaints(rgb: RGB, n = 3): { paint: Paint; dE: number }[] {
+  const [l, a, b] = rgbToLab(rgb)
+  return RAL.map((paint) => {
+    const [l2, a2, b2] = paint.lab
+    return { paint, dE: Math.hypot(l - l2, a - a2, b - b2) }
+  })
+    .sort((x, y) => x.dE - y.dE)
+    .slice(0, n)
 }
 
 // Относительная яркость (WCAG). Выше порога — на фоне читается чёрный текст.

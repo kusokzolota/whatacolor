@@ -12,6 +12,17 @@ export interface Gains {
 
 export type Facing = 'environment' | 'user'
 
+export interface Palette {
+  id: number
+  name: string
+  colors: string[] // HEX
+  createdAt: number
+}
+
+export const DRAFT_MAX = 6
+const DRAFT_KEY = 'draft'
+const PALETTES_KEY = 'palettes'
+
 const LIBRARY_KEY = 'library'
 export const LIBRARY_MAX = 500
 const LEGACY_PREFIX = 'colors:'
@@ -118,12 +129,18 @@ export function dateStamp(d = new Date()) {
   return `${d.getFullYear()}-${m}-${day}`
 }
 
+// Коэффициенты калибровки хранятся в линейном свете (версия 2). Старые считались в гамма-пространстве
+// и под новую формулу не подходят — такие просто не загружаем, нужно откалиброваться заново.
+const GAINS_VERSION = 2
+
 export function loadGains(f: Facing): Gains | null {
   const raw = safeGet(gainsKey(f))
   if (!raw) return null
   try {
     const g = JSON.parse(raw)
-    if ([g.r, g.g, g.b].every((v) => typeof v === 'number' && isFinite(v))) return g
+    if (g.v === GAINS_VERSION && [g.r, g.g, g.b].every((v) => typeof v === 'number' && isFinite(v) && v > 0)) {
+      return { r: g.r, g: g.g, b: g.b }
+    }
   } catch {
     /* ignore */
   }
@@ -131,7 +148,46 @@ export function loadGains(f: Facing): Gains | null {
 }
 
 export function saveGains(f: Facing, g: Gains) {
-  safeSet(gainsKey(f), JSON.stringify(g))
+  safeSet(gainsKey(f), JSON.stringify({ v: GAINS_VERSION, ...g }))
+}
+
+// Палитра, которую собирают прямо сейчас: переживает перезагрузку страницы
+export function loadDraft(): Sample[] {
+  try {
+    const parsed = JSON.parse(safeGet(DRAFT_KEY) ?? '[]')
+    return Array.isArray(parsed) ? parsed.filter(isSample).slice(0, DRAFT_MAX) : []
+  } catch {
+    return []
+  }
+}
+
+export function saveDraft(list: Sample[]) {
+  safeSet(DRAFT_KEY, JSON.stringify(list))
+}
+
+function isPalette(x: unknown): x is Palette {
+  const p = x as Palette
+  return (
+    !!p &&
+    typeof p.id === 'number' &&
+    typeof p.name === 'string' &&
+    Array.isArray(p.colors) &&
+    p.colors.every((h) => typeof h === 'string' && /^#[0-9A-Fa-f]{6}$/.test(h))
+  )
+}
+
+// Сохранённые палитры, новые первыми
+export function loadPalettes(): Palette[] {
+  try {
+    const parsed = JSON.parse(safeGet(PALETTES_KEY) ?? '[]')
+    return Array.isArray(parsed) ? parsed.filter(isPalette) : []
+  } catch {
+    return []
+  }
+}
+
+export function savePalettes(list: Palette[]) {
+  safeSet(PALETTES_KEY, JSON.stringify(list))
 }
 
 export function clearGains(f: Facing) {

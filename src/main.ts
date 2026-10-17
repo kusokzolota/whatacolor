@@ -1,23 +1,28 @@
 import './style.css'
-import { hexToRgb, meanRgb, medianRgb, nearestColor, rgbToHex, type RGB } from './color'
+import { fromLinear, hexToRgb, medianRgb, nearestColor, nearestPaints, rgbToHex, toLinear, type RGB } from './color'
 import { APP_NAME, DONATE_URL } from './config'
 import { colorName, getLang, LANGS, isRtl, setLang, t, tf, type Key } from './i18n'
-import { formatTime, pickSamples, renderPalette } from './palette'
+import { formatTime, renderPalette } from './palette'
 import {
   clearGains,
   dateStamp,
-  isSameDay,
+  DRAFT_MAX,
   LIBRARY_MAX,
+  loadDraft,
   loadFacing,
   loadGains,
   loadLibrary,
+  loadPalettes,
   pushSample,
+  saveDraft,
   saveFacing,
   saveGains,
   saveLibrary,
+  savePalettes,
   storageFailed,
   type Facing,
   type Gains,
+  type Palette,
   type Sample,
 } from './storage'
 
@@ -31,7 +36,7 @@ const liveHex = $('live-hex')
 const ribbon = $('ribbon')
 const hint = $('hint')
 const detail = $('detail')
-const paletteBtn = $('palette-btn')
+const saveBtn = $('save-btn')
 const shutter = $('shutter')
 const modeBtn = $('mode-btn')
 const libraryThumb = $('library-thumb')
@@ -45,23 +50,33 @@ const announcer = $('announcer')
 
 const SAMPLE = 20 // сторона области замера в пикселях видео
 const INTERVAL = 100 // не чаще 10 замеров в секунду
-const PALETTE_MIN = 4
 const AUTO_PERIOD = 2000 // как часто пересчитывать поправку
 const AUTO_NEAR_MAX = 0.9 // берём пиксели не темнее 90% от самого светлого в кадре
 const AUTO_MIN_PATCH = 0.002 // и только если таких набралось хотя бы столько от кадра
 const AUTO_MIN_LUMA = 80 // темнее — судить не по чему
 const AUTO_MAX_SPREAD = 110 // перекос сильнее — это уже не оттенок света
 const AUTO_SMOOTH = 0.6 // сглаживание между пересчётами
-const AUTO_MIN = 0.82
-const AUTO_MAX = 1.22
-const MANUAL_MIN = 0.5
-const MANUAL_MAX = 2.0
+// Поправки считаются в линейном свете, как в камерах и эндоскопах: это множители яркости каналов.
+// Авто осторожная (±~20% в привычных единицах экрана), ручная по листу — широкая.
+const AUTO_MIN = 0.65
+const AUTO_MAX = 1.5
+const MANUAL_MIN = 0.2
+const MANUAL_MAX = 5
+// Лист офисной бумаги не идеально белый: отражает около 90% света. К этому значению его и приводим,
+// а не к чистому #FFFFFF — иначе всё пересвечивается и светлые цвета сливаются.
+const PAPER: RGB = [0xf3, 0xf3, 0xf2]
+const PAPER_MIN_LUMA = 70 // темнее — света мало для калибровки
+const PAPER_MAX_UNEVEN = 0.12 // разброс яркости внутри рамки: тени, блики, край листа
+const PAPER_MAX_TINT = 3.5 // во сколько раз один канал ярче другого — так белое не выглядит даже под лампой
+const PALETTE_MIN = 3
 
 let stream: MediaStream | null = null
 let facing: Facing = loadFacing()
 let manualGains: Gains | null = loadGains(facing) // по белому листу, сохраняется
 let autoGains: Gains | null = null // по светлому пятну кадра, не сохраняется между запусками
-let library: Sample[] = loadLibrary()
+let library: Sample[] = loadLibrary() // все замеры
+let draft: Sample[] = loadDraft() // палитра, которую собирают сейчас
+let palettes: Palette[] = loadPalettes()
 let current: { rgb: RGB; hex: string } | null = null
 let errorKeys: [Key, Key] | null = null
 
@@ -88,8 +103,7 @@ function activeGains(): Gains | null {
 function applyGains([r, g, b]: RGB): RGB {
   const k = activeGains()
   if (!k) return [r, g, b]
-  const c = (v: number) => clamp(Math.round(v), 0, 255)
-  return [c(r * k.r), c(g * k.g), c(b * k.b)]
+  return [fromLinear(toLinear(r) * k.r), fromLinear(toLinear(g) * k.g), fromLinear(toLinear(b) * k.b)]
 }
 
 // Прямоугольник экрана → прямоугольник в координатах кадра (с учётом object-fit: cover).
@@ -116,10 +130,22 @@ function readCenter(): RGB | null {
   return medianRgb(sampleCtx.getImageData(0, 0, SAMPLE, SAMPLE).data)
 }
 
-// Средние по каналам в прямоугольнике кадра (по умолчанию — весь кадр)
-function readMean(x = 0, y = 0, w = video.videoWidth, h = video.videoHeight): RGB {
+// Лист внутри рамки калибровки: медиана по каналам (блик или пылинка её не сдвинут)
+// и неровность освещения — разброс яркости относительно средней.
+function readPaper(x: number, y: number, w: number, h: number): { median: RGB; uneven: number } {
   frameCtx.drawImage(video, x, y, w, h, 0, 0, frameCanvas.width, frameCanvas.height)
-  return meanRgb(frameCtx.getImageData(0, 0, frameCanvas.width, frameCanvas.height).data)
+  const d = frameCtx.getImageData(0, 0, frameCanvas.width, frameCanvas.height).data
+  let sum = 0
+  let sq = 0
+  const n = d.length / 4
+  for (let i = 0; i < d.length; i += 4) {
+    const l = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]
+    sum += l
+    sq += l * l
+  }
+  const mean = sum / n
+  const sd = Math.sqrt(Math.max(0, sq / n - mean * mean))
+  return { median: medianRgb(d), uneven: mean ? sd / mean : 1 }
 }
 
 let storageWarned = false
@@ -270,9 +296,10 @@ function updateAutoGains() {
   if (!warmToCool) return relaxAutoGains()
   if (Math.max(pr, pg, pb) - Math.min(pr, pg, pb) > AUTO_MAX_SPREAD) return relaxAutoGains()
 
-  const target = (pr + pg + pb) / 3
-  const k = (m: number) => clamp(target / Math.max(m, 1), AUTO_MIN, AUTO_MAX)
-  const next: Gains = { r: k(pr), g: k(pg), b: k(pb) }
+  const lin = [toLinear(pr), toLinear(pg), toLinear(pb)]
+  const target = (lin[0] + lin[1] + lin[2]) / 3
+  const k = (m: number) => clamp(target / Math.max(m, 1e-4), AUTO_MIN, AUTO_MAX)
+  const next: Gains = { r: k(lin[0]), g: k(lin[1]), b: k(lin[2]) }
   const mix = (a: number, b2: number) => a + (b2 - a) * AUTO_SMOOTH
   autoGains = autoGains
     ? { r: mix(autoGains.r, next.r), g: mix(autoGains.g, next.g), b: mix(autoGains.b, next.b) }
@@ -389,12 +416,7 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-// ---------- Замеры и лента за сегодня ----------
-
-function todaySamples(): Sample[] {
-  const now = Date.now()
-  return library.filter((s) => isSameDay(s.timestamp, now))
-}
+// ---------- Замеры и текущая палитра ----------
 
 function ltr(text: string) {
   const el = document.createElement('bdi')
@@ -410,43 +432,54 @@ function sampleName(s: Sample) {
 
 function persist() {
   saveLibrary(library)
+  saveDraft(draft)
   refreshCameraUi()
 }
 
 function refreshCameraUi() {
-  const today = todaySamples()
-  paletteBtn.hidden = today.length < PALETTE_MIN
-  hint.hidden = today.length > 0
+  saveBtn.hidden = draft.length < PALETTE_MIN
+  hint.hidden = draft.length > 0
+  shutter.classList.toggle('full', draft.length >= DRAFT_MAX)
   const last = library[library.length - 1]
   libraryThumb.style.background = last ? last.hex : ''
   libraryThumb.classList.toggle('filled', !!last)
 }
 
+// Полоска внизу — палитра, которую собирают сейчас: цвета плюс пустые места до шести
 function renderRibbon(newest = false) {
-  const today = todaySamples()
-  ribbon.replaceChildren(
-    ...today.map((s, i) => {
-      const el = document.createElement('button')
-      el.type = 'button'
-      el.className = 'chip'
-      el.style.background = s.hex
-      el.setAttribute('role', 'listitem')
-      el.setAttribute('aria-label', `${sampleName(s)}, ${s.hex}, ${formatTime(s.timestamp)}`)
-      if (newest && i === today.length - 1) el.classList.add('new')
-      bindChip(el, s)
-      return el
-    }),
-  )
-  // В RTL лента растёт влево, и scrollLeft там отрицательный
-  if (newest) ribbon.scrollTo({ left: isRtl() ? -ribbon.scrollWidth : ribbon.scrollWidth, behavior: 'smooth' })
+  const chips = draft.map((s, i) => {
+    const el = document.createElement('button')
+    el.type = 'button'
+    el.className = 'chip'
+    el.style.background = s.hex
+    el.setAttribute('role', 'listitem')
+    el.setAttribute('aria-label', `${sampleName(s)}, ${s.hex}`)
+    if (newest && i === draft.length - 1) el.classList.add('new')
+    bindChip(el, s)
+    return el
+  })
+  const slots = Array.from({ length: Math.max(0, DRAFT_MAX - draft.length) }, () => {
+    const el = document.createElement('span')
+    el.className = 'chip slot'
+    el.setAttribute('aria-hidden', 'true')
+    return el
+  })
+  ribbon.replaceChildren(...chips, ...slots)
 }
 
 function capture() {
   if (!current) return
+  if (draft.length >= DRAFT_MAX) {
+    navigator.vibrate?.([20, 60, 20])
+    showToast(t('paletteFull'))
+    return
+  }
   const last = library[library.length - 1]
   // timestamp служит идентификатором записи — делаем его уникальным
   const timestamp = Math.max(Date.now(), (last?.timestamp ?? 0) + 1)
-  library = pushSample(library, { hex: current.hex, name: colorName(nearestColor(current.rgb)), timestamp })
+  const sample: Sample = { hex: current.hex, name: colorName(nearestColor(current.rgb)), timestamp }
+  library = pushSample(library, sample) // в историю попадает каждый замер
+  draft = [...draft, sample]
   persist()
   renderRibbon(true)
   navigator.vibrate?.(30)
@@ -475,7 +508,7 @@ let detailTimer = 0
 function showDetail(s: Sample, chip: HTMLElement) {
   $('detail-swatch').style.background = s.hex
   $('detail-name').textContent = sampleName(s)
-  $('detail-meta').replaceChildren(ltr(s.hex), ' · ', ltr(formatTime(s.timestamp)))
+  $('detail-meta').replaceChildren(ltr(s.hex))
   detail.hidden = false
   live.hidden = true // на невысоких экранах карточка иначе наезжает на плашку
   ribbon.querySelectorAll('.selected').forEach((n) => n.classList.remove('selected'))
@@ -490,8 +523,9 @@ function hideDetail() {
   ribbon.querySelectorAll('.selected').forEach((n) => n.classList.remove('selected'))
 }
 
-function removeSample(ts: number) {
-  library = library.filter((x) => x.timestamp !== ts)
+// Свайп вверх убирает цвет только из собираемой палитры — в истории он остаётся
+function removeFromDraft(ts: number) {
+  draft = draft.filter((x) => x.timestamp !== ts)
   persist()
   hideDetail()
   renderRibbon()
@@ -538,7 +572,7 @@ function bindChip(el: HTMLElement, s: Sample) {
       el.style.transform = 'translateY(-120px)'
       el.style.opacity = '0'
       navigator.vibrate?.(15)
-      setTimeout(() => removeSample(s.timestamp), 200)
+      setTimeout(() => removeFromDraft(s.timestamp), 200)
       return
     }
     reset()
@@ -554,8 +588,8 @@ function bindChip(el: HTMLElement, s: Sample) {
 // ---------- Калибровка ----------
 
 function renderMode() {
-  // «авто» показываем только когда коэффициенты действительно посчитаны
-  modeBtn.textContent = t(manualGains ? 'modeSheet' : autoGains ? 'modeAuto' : 'modeNone')
+  // Пока не откалибровано по листу — заметная кнопка «Калибровать». Авто работает тихо, как подстраховка.
+  modeBtn.textContent = t(manualGains ? 'modeSheet' : 'calibrateBtn')
   modeBtn.classList.toggle('sheet', !!manualGains)
   $('calib-reset').hidden = !manualGains
 }
@@ -583,17 +617,28 @@ $('calib-reset').addEventListener('click', () => {
   closeCalib()
 })
 
+// Калибровка по белому листу, как в хирургических эндоскопах: камера смотрит на заведомо белое,
+// и мы находим множители каналов, которые делают его нейтральным. Дальше они применяются ко всем замерам.
 $('calib-done').addEventListener('click', async () => {
   if (!videoReady()) return
   await lockCamera()
   const r = screenRectToVideo(calibFrame.getBoundingClientRect())
-  const [mr, mg, mb] = readMean(r.x, r.y, r.w, r.h)
-  const k = (m: number) => clamp(255 / Math.max(m, 1), MANUAL_MIN, MANUAL_MAX)
-  manualGains = { r: k(mr), g: k(mg), b: k(mb) }
+  const { median, uneven } = readPaper(r.x, r.y, r.w, r.h)
+  const [mr, mg, mb] = median
+  // Проверяем, что в рамке действительно ровно освещённый белый лист, иначе калибровка испортит цвета
+  if (0.2126 * mr + 0.7152 * mg + 0.0722 * mb < PAPER_MIN_LUMA) return showToast(t('calibTooDark'))
+  if (uneven > PAPER_MAX_UNEVEN) return showToast(t('calibUneven'))
+  const lin = median.map((c) => Math.max(toLinear(c), 1e-4))
+  if (Math.max(...lin) / Math.min(...lin) > PAPER_MAX_TINT) return showToast(t('calibNotWhite'))
+
+  const target = PAPER.map(toLinear)
+  const k = (i: number) => clamp(target[i] / lin[i], MANUAL_MIN, MANUAL_MAX)
+  manualGains = { r: k(0), g: k(1), b: k(2) }
   saveGains(facing, manualGains)
   renderMode()
   navigator.vibrate?.(30)
   closeCalib()
+  showToast(t('calibOk'))
 })
 
 // ---------- Смена камеры ----------
@@ -719,7 +764,10 @@ function renderLibrary() {
 
 $('library-btn').addEventListener('click', () => {
   renderLibrary()
+  renderPalettes()
   libraryList.scrollTop = 0
+  paletteList.scrollTop = 0
+  setTab(libTab)
   openSheet(libraryHost)
 })
 $('library-close').addEventListener('click', () => {
@@ -827,7 +875,6 @@ $('row-delete').addEventListener('click', () => {
   library = library.filter((x) => x.timestamp !== ts)
   persist()
   renderLibrary()
-  renderRibbon()
   navigator.vibrate?.(15)
 })
 
@@ -842,48 +889,81 @@ $('library-copy').addEventListener('click', async () => {
   }
 })
 
-$('library-clear').addEventListener('click', () => {
+// Одно окно подтверждения на все необратимые действия
+let onConfirm: (() => void) | null = null
+function openConfirm(text: string, yes: string, action: () => void) {
   hideMenu()
+  $('confirm-text').textContent = text
+  $('confirm-yes').textContent = yes
+  onConfirm = action
   confirmHost.hidden = false
-})
-$('confirm-no').addEventListener('click', () => (confirmHost.hidden = true))
+}
+function closeConfirm() {
+  confirmHost.hidden = true
+  onConfirm = null
+}
+$('confirm-no').addEventListener('click', closeConfirm)
 confirmHost.addEventListener('click', (e) => {
-  if (e.target === confirmHost) confirmHost.hidden = true
+  if (e.target === confirmHost) closeConfirm()
 })
 $('confirm-yes').addEventListener('click', () => {
-  confirmHost.hidden = true
-  library = []
-  persist()
-  renderLibrary()
-  renderRibbon()
-  navigator.vibrate?.(30)
+  const action = onConfirm
+  closeConfirm()
+  action?.()
 })
 
-// ---------- Палитра дня ----------
+// Очищаем историю замеров; сохранённые палитры и текущая палитра не трогаются
+$('library-clear').addEventListener('click', () => {
+  openConfirm(t('clearConfirm'), t('clearYes'), () => {
+    library = []
+    persist()
+    renderLibrary()
+    navigator.vibrate?.(30)
+  })
+})
+
+// ---------- Карточка палитры для шеринга ----------
 
 const paletteOverlay = $('palette')
 const paletteImg = $<HTMLImageElement>('palette-img')
 let paletteBlob: Blob | null = null
 let paletteUrl = ''
+let cardTitle = ''
+let cardColors: string[] = []
 
 function paletteFileName() {
-  return `${APP_NAME}-${dateStamp()}.png`
+  // Имя файла из названия палитры: буквы любого алфавита, цифры и дефисы
+  const slug = cardTitle
+    .toLocaleLowerCase(getLang())
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+  return `${APP_NAME}-${slug || dateStamp()}.png`
 }
 
-paletteBtn.addEventListener('click', async () => {
+// Цветные полосы, HEX, название палитры и мелко адрес сайта — готово для сторис и мессенджеров
+async function showCard(title: string, colors: string[]) {
   hideDetail()
-  paletteBlob = await renderPalette(todaySamples())
+  cardTitle = title
+  cardColors = colors
+  const base = Date.now()
+  paletteBlob = await renderPalette(
+    colors.map((hex, i) => ({ hex, name: '', timestamp: base + i })),
+    { title },
+  )
   if (paletteUrl) URL.revokeObjectURL(paletteUrl)
   paletteUrl = URL.createObjectURL(paletteBlob)
   paletteImg.src = paletteUrl
   paletteOverlay.hidden = false
   pauseFor('palette')
-})
+}
 
-$('palette-close').addEventListener('click', () => {
+function closeCard() {
   paletteOverlay.hidden = true
   resumeFor('palette')
-})
+}
+
+$('palette-close').addEventListener('click', closeCard)
 
 function download() {
   if (!paletteUrl) return
@@ -897,11 +977,9 @@ function download() {
 
 $('palette-download').addEventListener('click', download)
 
-// HEX тех же цветов, что попали на картинку
+// HEX тех же цветов, что на карточке
 $('palette-copy').addEventListener('click', async () => {
-  const text = pickSamples(todaySamples())
-    .map((s) => s.hex)
-    .join('\n')
+  const text = cardColors.join('\n')
   if (!text) return
   if (await copyText(text)) {
     navigator.vibrate?.(15)
@@ -916,13 +994,244 @@ $('palette-share').addEventListener('click', async () => {
   const file = new File([paletteBlob], paletteFileName(), { type: 'image/png' })
   if (navigator.canShare?.({ files: [file] })) {
     try {
-      await navigator.share({ files: [file], title: `${APP_NAME} — ${t('palette')}` })
+      await navigator.share({ files: [file], title: `${APP_NAME} — ${cardTitle}` })
     } catch (e) {
       if ((e as DOMException).name !== 'AbortError') download()
     }
   } else {
     download()
   }
+})
+
+// ---------- Сохранение палитры ----------
+
+const saveHost = $('save')
+const nameInput = $<HTMLInputElement>('palette-name')
+
+function stripes(colors: string[]) {
+  return colors.map((hex) => {
+    const el = document.createElement('span')
+    el.style.background = hex
+    return el
+  })
+}
+
+saveBtn.addEventListener('click', () => {
+  if (draft.length < PALETTE_MIN) return
+  $('save-preview').replaceChildren(...stripes(draft.map((s) => s.hex)))
+  nameInput.value = ''
+  openSheet(saveHost)
+  setTimeout(() => nameInput.focus(), 250)
+})
+
+$('save-cancel').addEventListener('click', () => closeSheet(saveHost))
+
+$('save-form').addEventListener('submit', (e) => {
+  e.preventDefault()
+  if (draft.length < PALETTE_MIN) return
+  const name = nameInput.value.trim() || t('untitled')
+  const palette: Palette = { id: Date.now(), name, colors: draft.map((s) => s.hex), createdAt: Date.now() }
+  palettes = [palette, ...palettes]
+  savePalettes(palettes)
+  draft = []
+  persist()
+  renderRibbon()
+  nameInput.blur()
+  closeSheet(saveHost)
+  navigator.vibrate?.(30)
+  showToast(tf('paletteSaved', { name }))
+  // Сразу показываем карточку — ради неё палитру обычно и собирают
+  showCard(palette.name, palette.colors)
+})
+
+// ---------- Мои палитры ----------
+
+const tabPalettes = $('tab-palettes')
+const tabHistory = $('tab-history')
+const panePalettes = $('pane-palettes')
+const paneHistory = $('pane-history')
+const paletteList = $('palette-list')
+const palettesEmpty = $('palettes-empty')
+const paletteView = $('palette-view')
+const pvColors = $('pv-colors')
+let libTab: 'palettes' | 'history' = 'palettes'
+let openPalette: Palette | null = null
+
+function setTab(tab: 'palettes' | 'history') {
+  libTab = tab
+  hideMenu()
+  tabPalettes.setAttribute('aria-selected', String(tab === 'palettes'))
+  tabHistory.setAttribute('aria-selected', String(tab === 'history'))
+  panePalettes.hidden = tab !== 'palettes'
+  paneHistory.hidden = tab !== 'history'
+  $('library-count').hidden = tab !== 'history'
+}
+
+tabPalettes.addEventListener('click', () => setTab('palettes'))
+tabHistory.addEventListener('click', () => setTab('history'))
+
+function renderPalettes() {
+  closePaletteView()
+  palettesEmpty.hidden = palettes.length > 0
+  paletteList.hidden = !palettes.length
+  paletteList.replaceChildren(
+    ...palettes.map((p) => {
+      const card = document.createElement('button')
+      card.type = 'button'
+      card.className = 'pal-card'
+      const head = document.createElement('span')
+      head.className = 'pal-card-head'
+      const name = document.createElement('span')
+      name.className = 'pal-card-name'
+      name.textContent = p.name
+      const date = document.createElement('span')
+      date.className = 'pal-card-date'
+      date.textContent = dateLabel(p.createdAt)
+      head.append(name, date)
+      const bar = document.createElement('span')
+      bar.className = 'stripes'
+      bar.append(...stripes(p.colors))
+      card.append(head, bar)
+      card.addEventListener('click', () => showPaletteView(p))
+      return card
+    }),
+  )
+}
+
+function closePaletteView() {
+  openPalette = null
+  paletteView.hidden = true
+  paletteList.hidden = !palettes.length
+  palettesEmpty.hidden = palettes.length > 0
+}
+
+// Экран палитры: цвета списком, у каждого — своё меню
+function showPaletteView(p: Palette) {
+  openPalette = p
+  paletteList.hidden = true
+  palettesEmpty.hidden = true
+  paletteView.hidden = false
+  $('pv-name').textContent = p.name
+  pvColors.replaceChildren(...p.colors.map(colorItem))
+  pvColors.scrollTop = 0
+}
+
+function colorItem(hex: string) {
+  const item = document.createElement('div')
+  item.className = 'pv-item'
+
+  const row = document.createElement('button')
+  row.type = 'button'
+  row.className = 'lib-row'
+  const square = document.createElement('span')
+  square.className = 'lib-square'
+  square.style.background = hex
+  const text = document.createElement('span')
+  text.className = 'lib-text'
+  const name = document.createElement('span')
+  name.className = 'lib-name'
+  name.textContent = colorName(nearestColor(hexToRgb(hex)))
+  const code = document.createElement('span')
+  code.className = 'lib-hex'
+  code.textContent = hex
+  text.append(name, code)
+  row.append(square, text, document.createElement('span'))
+
+  // Меню цвета: копирование и необязательная подсказка «Похожие краски»
+  const more = document.createElement('div')
+  more.className = 'pv-more'
+  more.hidden = true
+  const actions = document.createElement('div')
+  actions.className = 'pv-more-actions'
+  const copyBtn = document.createElement('button')
+  copyBtn.type = 'button'
+  copyBtn.className = 'pill soft compact'
+  copyBtn.textContent = t('copyHex')
+  const paintsBtn = document.createElement('button')
+  paintsBtn.type = 'button'
+  paintsBtn.className = 'pill soft compact'
+  paintsBtn.textContent = t('similarPaints')
+  actions.append(copyBtn, paintsBtn)
+  const paints = document.createElement('div')
+  paints.hidden = true
+  more.append(actions, paints)
+
+  row.addEventListener('click', () => {
+    const opening = more.hidden
+    pvColors.querySelectorAll<HTMLElement>('.pv-item').forEach((el) => {
+      el.classList.remove('open')
+      el.querySelector<HTMLElement>('.pv-more')!.hidden = true
+    })
+    if (opening) {
+      item.classList.add('open')
+      more.hidden = false
+    }
+  })
+  copyBtn.addEventListener('click', async () => {
+    if (await copyText(hex)) {
+      navigator.vibrate?.(15)
+      showToast(tf('copied', { hex }))
+    } else {
+      showToast(`${t('copyFailed')}: ${hex}`)
+    }
+  })
+  paintsBtn.addEventListener('click', () => {
+    if (!paints.hidden) {
+      paints.hidden = true
+      return
+    }
+    paints.replaceChildren(...paintRows(hex))
+    paints.hidden = false
+  })
+
+  item.append(row, more)
+  return item
+}
+
+// Три ближайшие краски RAL. Близость словами, а не числом ΔE — так понятнее.
+function paintRows(hex: string): HTMLElement[] {
+  const rows = nearestPaints(hexToRgb(hex), 3).map(({ paint, dE }) => {
+    const row = document.createElement('div')
+    row.className = 'paint'
+    const sw = document.createElement('span')
+    sw.className = 'paint-swatch'
+    sw.style.background = paint.hex
+    const text = document.createElement('span')
+    text.className = 'lib-text'
+    const code = document.createElement('span')
+    code.className = 'paint-code'
+    code.textContent = paint.code
+    const name = document.createElement('span')
+    name.className = 'paint-name'
+    name.textContent = paint.name
+    text.append(code, name)
+    const match = document.createElement('span')
+    match.className = 'paint-match'
+    match.textContent = t(dE < 3 ? 'matchExact' : dE < 6 ? 'matchClose' : 'matchApprox')
+    row.append(sw, text, match)
+    return row
+  })
+  const note = document.createElement('p')
+  note.className = 'paints-note'
+  note.textContent = t('paintsNote')
+  return [...rows, note]
+}
+
+$('pv-back').addEventListener('click', closePaletteView)
+
+$('pv-share').addEventListener('click', () => {
+  if (openPalette) showCard(openPalette.name, openPalette.colors)
+})
+
+$('pv-delete').addEventListener('click', () => {
+  const p = openPalette
+  if (!p) return
+  openConfirm(tf('deletePaletteConfirm', { name: p.name }), t('delete'), () => {
+    palettes = palettes.filter((x) => x.id !== p.id)
+    savePalettes(palettes)
+    renderPalettes()
+    navigator.vibrate?.(30)
+  })
 })
 
 // ---------- Язык ----------
@@ -943,6 +1252,9 @@ function applyI18n() {
   })
   document.querySelectorAll<HTMLElement>('[data-i18n-alt]').forEach((el) => {
     el.setAttribute('alt', t(el.dataset.i18nAlt as Key))
+  })
+  document.querySelectorAll<HTMLInputElement>('[data-i18n-ph]').forEach((el) => {
+    el.placeholder = t(el.dataset.i18nPh as Key)
   })
   if (errorKeys) showError(...errorKeys)
   renderMode()
@@ -1006,15 +1318,16 @@ function scheduleMidnight() {
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return
-  if (!confirmHost.hidden) confirmHost.hidden = true
+  // Закрываем самое верхнее: карточка может лежать поверх библиотеки
+  if (!paletteOverlay.hidden) closeCard()
+  else if (!confirmHost.hidden) closeConfirm()
   else if (!rowMenu.hidden) hideMenu()
+  else if (!saveHost.hidden) closeSheet(saveHost)
+  else if (!libraryHost.hidden && openPalette) closePaletteView()
   else if (!libraryHost.hidden) closeSheet(libraryHost)
   else if (!langHost.hidden) closeSheet(langHost)
   else if (!donateHost.hidden) closeSheet(donateHost)
-  else if (!paletteOverlay.hidden) {
-    paletteOverlay.hidden = true
-    resumeFor('palette')
-  } else if (!calibOverlay.hidden) closeCalib()
+  else if (!calibOverlay.hidden) closeCalib()
   else if (!detail.hidden) hideDetail()
 })
 
